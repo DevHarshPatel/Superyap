@@ -1,0 +1,24 @@
+# Superyap dependencies (Python 3.11+ on Windows 10/11)
+
+# --- Milestone 1: pill UI ---
+PySide6>=6.6
+python-dotenv>=1.0
+
+# --- Milestone 2: hotkey + shortcut protection ---
+pynput>=1.7   # keyboard hooks (sees Left vs Right Ctrl; `keyboard` is
+              # unreliable on Python 3.13+ and receives no events there)
+mouse>=0.7    # mouse click / wheel hooks
+
+# --- Milestone 3: microphone capture ---
+sounddevice>=0.4
+numpy>=1.26
+
+# --- Milestone 4/5: Groq transcription + cleanup ---
+requests>=2.31
+
+# --- Milestone 4: pasting ---
+pyperclip>=1.8
+pyautogui>=0.9
+
+# --- Milestone 7: packaging into a single .exe ---
+pyinstaller>=6.0

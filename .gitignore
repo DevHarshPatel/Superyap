@@ -1,0 +1,38 @@
+# --- Secrets and config (never commit the real .env) ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# --- Build output (PyInstaller) ---
+build/
+dist/
+
+# --- Logs and runtime files ---
+# The app writes superyap.log next to itself (main.py).
+# The remembered pill position is stored in the Windows registry via
+# QSettings (pill_ui.py), never in a file inside this folder.
+*.log
+
+# --- Temporary audio (the app records in memory only, but just in case) ---
+*.wav
+*.flac
+*.mp3
+recordings/
+
+# --- Editor and OS files ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# --- Internal docs and local test scripts (not part of the app) ---
+prd.md
+test_cleanup.py
