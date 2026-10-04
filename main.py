@@ -1,6 +1,6 @@
 """Superyap -- free, minimal Wispr Flow-style dictation for Windows.
 
-Hold (or tap) Left Ctrl and speak. When you stop, the take is transcribed
+Hold Ctrl+Win (or press it twice for no-hands mode) and speak. When you stop, the take is transcribed
 with Groq Whisper and the text is pasted into whatever window has focus
 (PR flow: pill -> waveform -> processing -> pasted text, clipboard kept).
 
@@ -80,7 +80,7 @@ def main() -> int:
         monitor.level_changed.connect(pill.set_audio_level)
         monitor.error.connect(lambda msg: _fail(pill, bridge, msg))
 
-        # Left Ctrl hotkey (observe only -- normal shortcuts keep working).
+        # Ctrl+Win hotkey (observe only -- normal shortcuts keep working).
         hotkeys = HotkeyManager()
         hotkeys.recording_begun.connect(monitor.start_recording)
         hotkeys.recording_ui_show.connect(lambda: pill.set_state(PillState.RECORDING))

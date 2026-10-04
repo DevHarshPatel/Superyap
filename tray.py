@@ -78,7 +78,7 @@ class TrayIcon(QSystemTrayIcon):
 
     def __init__(self, parent=None) -> None:
         super().__init__(_make_icon(), parent)
-        self.setToolTip("Superyap -- hold Left Ctrl and speak")
+        self.setToolTip("Superyap -- hold Ctrl+Win and speak")
 
         # Keep our own reference: Qt does not take ownership of the menu.
         self._menu = QMenu()

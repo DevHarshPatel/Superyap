@@ -60,11 +60,16 @@ RATE_LIMIT_RETRIES = 2
 # ---------------------------------------------------------------------------
 # Hotkey (milestone 2+)
 # ---------------------------------------------------------------------------
-# The hotkey is Left Ctrl *alone*. It is only observed, never blocked.
-HOTKEY = "left ctrl"
+# The hotkey is the chord Left Ctrl + Left Windows ("Ctrl+Win"), written as
+# a list of key names joined with "+". It is only observed, never blocked.
+HOTKEY = "left ctrl + left windows"
 
-# Held at least this long => push-to-talk. Released sooner => tap (toggle).
+# Held at least this long => push-to-talk. Released sooner => a tap: one tap
+# does nothing, two taps within DOUBLE_PRESS_MS start no-hands mode.
 HOLD_THRESHOLD_MS = 300
+
+# Two taps of the hotkey within this many milliseconds start no-hands mode.
+DOUBLE_PRESS_MS = 400
 
 # Show the recording animation only after the key has been held this long.
 RECORDING_UI_DELAY_MS = 150
