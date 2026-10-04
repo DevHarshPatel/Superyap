@@ -1,6 +1,6 @@
 # Superyap
 
-**A free, minimal Wispr Flow-style dictation app for Windows: hold Left Ctrl,
+**A free, minimal Wispr Flow-style dictation app for Windows: hold Ctrl+Win,
 speak, and the cleaned-up transcription is pasted into whatever app has focus.**
 
 ![Superyap demo](docs/demo.gif)
@@ -9,7 +9,7 @@ speak, and the cleaned-up transcription is pasted into whatever app has focus.**
 ## What it does
 
 Superyap runs quietly in the background showing only a tiny floating pill.
-Hold **Left Ctrl**, say what you want to write, and let go — your words are
+Hold **Ctrl+Win** (Left Ctrl + Left Windows), say what you want to write, and let go — your words are
 transcribed with Groq Whisper, lightly cleaned up (filler words removed,
 punctuation fixed, self-corrections applied), and pasted at the cursor in the
 app you were using. Your clipboard is put back afterwards, and normal
@@ -17,7 +17,7 @@ shortcuts like Ctrl+C keep working exactly as before.
 
 ## Features
 
-- Push-to-talk (hold Left Ctrl) and tap-to-toggle dictation
+- Push-to-talk (hold Ctrl+Win) and no-hands dictation (press Ctrl+Win twice)
 - Shortcut-safe hotkey: Ctrl+C, Ctrl+V, Ctrl+Z, Ctrl+click and Ctrl+scroll
   work normally and simply cancel the take
 - Esc cancels a recording with nothing pasted
@@ -35,11 +35,11 @@ shortcuts like Ctrl+C keep working exactly as before.
 
 ## How it works
 
-1. Press **Left Ctrl** (hold it, or tap it) — the microphone opens and
-   recording starts immediately.
+1. Press **Ctrl+Win** (hold it, or press it twice) — the microphone opens
+   and recording starts immediately.
 2. Speak; the pill shows your live microphone level as a waveform.
-3. Stop: release the key after holding it, or tap it again if you tapped
-   first. Press **Esc** to cancel instead.
+3. Stop: release the keys after holding them, or press **Ctrl+Win** once if
+   you started with the double press. Press **Esc** to cancel instead.
 4. The take (16 kHz mono WAV, kept in memory only) is sent to **Groq Whisper**
    (`whisper-large-v3-turbo`) for transcription.
 5. The transcript goes to a **Groq LLM** (`openai/gpt-oss-20b`) for light
@@ -87,12 +87,14 @@ python main.py --demo   # cycle the pill states with fake audio
 
 ## Usage
 
-- **Hold Left Ctrl** for at least ~0.3 s and speak, then release → the take
+- **Hold Ctrl+Win** for at least ~0.3 s and speak, then release → the take
   is transcribed, cleaned up and pasted (push-to-talk).
-- **Tap Left Ctrl** briefly → recording toggles on (the pill shows it at
-  once); the next clean tap stops and pastes.
+- **Press Ctrl+Win twice** within 0.4 s → no-hands mode: recording stays on
+  (the pill shows it at once); the next press of Ctrl+Win stops and pastes.
+- A single short tap of Ctrl+Win does nothing — accidental taps never start
+  dictation.
 - **Esc** while recording → cancel. Nothing is transcribed or pasted.
-- Any other key, mouse click, or scroll while Left Ctrl is held → the take is
+- Any other key, mouse click, or scroll while Ctrl+Win is held → the take is
   discarded instantly, so normal shortcuts keep working.
 - Drag the pill anywhere with the mouse; the position is remembered.
 
@@ -124,8 +126,9 @@ All knobs are constants in `config.py`; the API key lives in `.env`.
 | `CLEANUP_MAX_COMPLETION_TOKENS` | `1024` | Output budget for cleanup (reasoning tokens count against it) |
 | `REQUEST_TIMEOUT_S` | `20` | Timeout per Groq request (seconds) |
 | `RATE_LIMIT_RETRIES` | `2` | Retries after HTTP 429 |
-| `HOTKEY` | `"left ctrl"` | The dictation key (see supported list below) |
-| `HOLD_THRESHOLD_MS` | `300` | Held this long → push-to-talk; shorter → tap-toggle |
+| `HOTKEY` | `"left ctrl + left windows"` | The dictation chord (see supported list below) |
+| `HOLD_THRESHOLD_MS` | `300` | Held this long → push-to-talk; shorter → a tap |
+| `DOUBLE_PRESS_MS` | `400` | Two taps within this window → no-hands mode |
 | `RECORDING_UI_DELAY_MS` | `150` | Delay before the recording animation shows |
 | `SAMPLE_RATE` | `16000` | Microphone sample rate (Hz) |
 | `CHANNELS` | `1` | Mono capture |
@@ -138,9 +141,11 @@ All knobs are constants in `config.py`; the API key lives in `.env`.
 | `PILL_DEFAULT_POS` | `None` | Force a startup position `(x, y)` instead of bottom-center |
 | `SETTINGS_ORG` / `SETTINGS_APP` | `"Superyap"` | Registry key where the dragged position is stored |
 
-Supported `HOTKEY` values: `left ctrl`, `right ctrl`, `left alt`,
-`right alt`, `left shift`, `right shift`. Anything else is rejected at
-startup with an error in the log.
+Supported `HOTKEY` keys: `left ctrl`, `right ctrl`, `left alt`,
+`right alt`, `left shift`, `right shift`, `left windows`, `right windows`.
+Join two keys with `+` for a chord (e.g. `"left ctrl + left windows"`), or
+name a single key. Anything else is rejected at startup with an error in the
+log.
 
 ## Building a standalone .exe
 
@@ -212,7 +217,7 @@ https://console.groq.com/docs/rate-limits instead of trusting any list here.
 Superyap/
 ├── main.py           # entry point: wires UI, hotkey, mic, Groq, paste
 ├── config.py         # all settings + .env loading
-├── hotkey.py         # Left Ctrl state machine (hold/tap, Esc, shortcut guard)
+├── hotkey.py         # Ctrl+Win chord state machine (hold/double-press, Esc, shortcut guard)
 ├── recorder.py       # mic capture (open only while recording, in-memory takes)
 ├── groq_client.py    # Whisper transcription + LLM cleanup with fallback
 ├── paster.py         # clipboard save/restore + simulated Ctrl+V
@@ -235,6 +240,9 @@ Superyap/
   the raw transcript is pasted.
 - The microphone opens when you press the hotkey (it stays closed while
   idle), so capture begins a few dozen milliseconds after key-down.
+- The hotkey keys are only observed, never blocked. If Windows or another
+  tool reacts to the same key combination (e.g. Win+V clipboard history when
+  a Windows key is part of the chord), both things happen.
 - No settings UI, hotkey remapping UI, history, or streaming partial text —
   by design. Edit `config.py` to change behavior.
 - Windows only (by design).
