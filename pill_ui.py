@@ -7,6 +7,17 @@ soft shadow.
 The pill has two sizes and animates between them smoothly:
 - a small, thin, non-invasive pill while idle (a dim dot inside),
 - the full-size pill while recording or processing.
+
+In no-hands mode (Ctrl+Win pressed twice) two controls animate in:
+- a circular cancel button (same height as the pill) that emerges from
+  behind the pill's left edge; clicking it -- or pressing Esc -- discards
+  the take with no API call,
+- a red record button inside the pill's right side; clicking it -- or
+  pressing Enter -- finishes the take so it gets transcribed.
+
+Dragged close to the left or right screen edge, the whole pill flips 90
+degrees and stands upright. Everything is drawn in coordinates anchored to
+the pill's center and rotated about it, so the flip is just an animation.
 The pill's center stays anchored while its size animates, and the content of
 one state crossfades into the next, so every transition (especially
 processing -> idle) feels cohesive instead of abrupt.
@@ -27,7 +38,7 @@ import sys
 import time
 from enum import Enum
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -51,9 +62,20 @@ COL_IDLE = QColor(150, 155, 175, 170)         # dim idle dot
 COL_RECORDING = QColor(240, 240, 245)         # white waveform
 COL_PROCESSING = QColor(150, 165, 200, 230)   # soft dots
 COL_ERROR = QColor(235, 70, 80, 255)          # red flash
+COL_CANCEL_X = QColor(198, 198, 205)          # the X on the cancel button
+COL_REC_PANEL = QColor(122, 22, 14)           # dark red record-button panel
+COL_REC_ICON = QColor(244, 85, 60)            # bright red record icon
 
 # How many waveform bars we draw while recording.
 NUM_BARS = 7
+
+# How many times per second the waveform bars swap between tall and short
+# (even bars high while odd bars low, then the other way round).
+BAR_SWAP_HZ = 1.0
+
+# Subtle per-bar variety so the row doesn't look mechanical. It only scales
+# how far each bar swings; the even/odd alternation stays exact.
+BAR_VARIETY = (1.0, 0.88, 0.96, 0.85, 1.0, 0.9, 0.93)
 
 # Animation loop period in milliseconds (~60 fps).
 FRAME_MS = 16
@@ -80,6 +102,10 @@ class PillWindow(QWidget):
 
     # Emitted whenever the pill is dragged to a new spot (future use).
     position_changed = Signal(QPoint)
+    # The circular cancel button next to the pill was clicked.
+    cancel_clicked = Signal()
+    # The red record button inside the pill was clicked (no-hands mode).
+    record_clicked = Signal()
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -92,14 +118,24 @@ class PillWindow(QWidget):
         self._size_t = 0.0
         self._size_target = 0.0
 
+        # --- Control animations: 0.0 = hidden, 1.0 = fully shown. Both
+        # --- controls are no-hands-only: the cancel button emerges from
+        # --- behind the pill, the red record button pops into the pill. ---
+        self._cancel_t = 0.0
+        self._cancel_target = 0.0
+        self._record_t = 0.0
+        self._record_target = 0.0
+
+        # --- Edge flip: 0.0 = flat, 1.0 = standing upright (rotated 90
+        # --- degrees) after being dragged near a left/right screen edge. ---
+        self._rot_t = 0.0
+        self._rot_target = 0.0
+        self._vertical = False     # orientation decision (with hysteresis)
+
         # --- Audio animation (all eased toward targets every frame) ---
         self._level_target = 0.0    # newest raw audio level (0..1)
         self._level_smooth = 0.0    # smoothed level (fast attack, slow release)
         self._bar_levels = [0.0] * NUM_BARS
-        # Bell-shaped weights: center bars swing highest, edge bars stay low.
-        self._bar_weights = [
-            math.sin(math.pi * (i + 0.5) / NUM_BARS) for i in range(NUM_BARS)
-        ]
         self._error_started: float | None = None  # time.monotonic() of flash
         self._t0 = time.monotonic()
         self._last_topmost = 0.0  # last time we re-asserted always-on-top
@@ -129,6 +165,7 @@ class PillWindow(QWidget):
 
         # --- Dragging ---
         self._drag_offset: QPoint | None = None
+        self._press_pos: QPoint | None = None  # where the press started
 
         self._settings = QSettings(config.SETTINGS_ORG, config.SETTINGS_APP)
         self._place_initial()
@@ -146,14 +183,110 @@ class PillWindow(QWidget):
         ) * self._size_t
         return w, h
 
+    def _cancel_extent(self) -> float:
+        """How far the window sticks out left of the pill for the cancel button."""
+        _, pill_h = self._pill_size()
+        return self._cancel_t * pill_h * (
+            config.CANCEL_BUTTON_GAP + config.CANCEL_BUTTON_SCALE
+        )
+
+    def _rotation_deg(self) -> float:
+        """Current rotation: 0 = flat, 90 = standing upright at a screen edge."""
+        return 90.0 * self._rot_t
+
+    def _pill_rect(self) -> QRectF:
+        """The drawn pill rect in content coordinates (origin = pill center).
+
+        Everything (controls, waveform) is laid out in these coordinates and
+        painted through a rotation about the origin, so flipping the pill
+        upright near a screen edge needs no per-shape rewriting.
+        """
+        pill_w, pill_h = self._pill_size()
+        return QRectF(-pill_w / 2, -pill_h / 2, pill_w, pill_h)
+
+    def _layout_extents(self) -> tuple[float, float, float, float]:
+        """Padded content half-extents around the pill center, rotated.
+
+        Returns (left, right, up, down): the distance from the pill center to
+        each edge of the window, in widget-local coordinates.
+        """
+        pill_w, pill_h = self._pill_size()
+        extra = self._cancel_extent()  # the cancel button sticks out left
+        pad = config.PILL_SHADOW_MARGIN
+        x_neg = pill_w / 2 + extra + pad
+        x_pos = pill_w / 2 + pad
+        y = max(pill_h, pill_h * config.CANCEL_BUTTON_SCALE) / 2 + pad
+        ang = math.radians(self._rotation_deg())
+        c, s = abs(math.cos(ang)), abs(math.sin(ang))
+        return (
+            x_neg * c + y * s,   # left
+            x_pos * c + y * s,   # right
+            x_neg * s + y * c,   # up
+            x_pos * s + y * c,   # down
+        )
+
+    def _paint_origin(self) -> QPointF:
+        """Widget-local position of the pill center (= the rotation origin)."""
+        left, _, up, _ = self._layout_extents()
+        return QPointF(left, up)
+
+    def _to_content(self, point: QPointF) -> QPointF:
+        """Map a widget-local point into content coordinates (un-rotate)."""
+        origin = self._paint_origin()
+        dx, dy = point.x() - origin.x(), point.y() - origin.y()
+        ang = -math.radians(self._rotation_deg())
+        c, s = math.cos(ang), math.sin(ang)
+        return QPointF(dx * c - dy * s, dx * s + dy * c)
+
+    def _cancel_geometry(self) -> tuple[QRectF, float]:
+        """Cancel circle rect (widget-local) plus its current opacity.
+
+        The circle is the same size as the pill is tall. It starts tucked
+        behind the pill's left edge and slides out to the left as `_cancel_t`
+        grows. The rect is in content coordinates (see _pill_rect).
+        """
+        pill_rect = self._pill_rect()
+        pill_h = pill_rect.height()
+        radius_full = pill_h * config.CANCEL_BUTTON_SCALE / 2
+        gap = pill_h * config.CANCEL_BUTTON_GAP
+        p = self._cancel_t
+        radius = radius_full * (0.55 + 0.45 * p)
+        center_x = (
+            pill_rect.left()
+            + (1.0 - p) * radius_full * 0.25
+            - p * (gap + radius_full)
+        )
+        rect = QRectF(
+            center_x - radius,
+            pill_rect.center().y() - radius,
+            2 * radius,
+            2 * radius,
+        )
+        return rect, min(1.0, p * 1.6)
+
+    def _record_panel_rect(self) -> QRectF:
+        """The record button's full panel rect (content coordinates)."""
+        pill_rect = self._pill_rect()
+        pill_w, pill_h = pill_rect.width(), pill_rect.height()
+        inset = pill_h * config.RECORD_BUTTON_INSET
+        panel_h = pill_h * config.RECORD_BUTTON_HEIGHT
+        panel_w = pill_w * config.RECORD_BUTTON_WIDTH
+        return QRectF(
+            pill_rect.right() - inset - panel_w,
+            pill_rect.center().y() - panel_h / 2,
+            panel_w,
+            panel_h,
+        )
+
     def _apply_geometry(self) -> None:
-        """Resize the window to hug the pill and keep the pill centered."""
-        w, h = self._pill_size()
-        win_w = int(round(w + 2 * config.PILL_SHADOW_MARGIN))
-        win_h = int(round(h + 2 * config.PILL_SHADOW_MARGIN))
+        """Resize the window to hug the (rotated) drawing; the pill's center
+        stays anchored at self._center."""
+        left, right, up, down = self._layout_extents()
+        win_w = int(round(left + right))
+        win_h = int(round(up + down))
         pos = (
-            int(round(self._center.x() - win_w / 2)),
-            int(round(self._center.y() - win_h / 2)),
+            int(round(self._center.x() - left)),
+            int(round(self._center.y() - up)),
         )
         if (win_w, win_h) != self._last_win_size or pos != self._last_win_pos:
             self._last_win_size = (win_w, win_h)
@@ -217,8 +350,15 @@ class PillWindow(QWidget):
         if screen is None:
             return
         avail = screen.availableGeometry()
-        win_w, win_h = self._last_win_size
-        half_w, half_h = win_w // 2, win_h // 2
+        # Clamp on the pill body only (plus a small pad): the controls may
+        # transiently lean past the edge while the pill flips upright, and
+        # the flip trigger must stay reachable before the clamp bites.
+        pill_w, pill_h = self._pill_size()
+        pad = config.PILL_EDGE_PAD
+        ang = math.radians(self._rotation_deg())
+        c, s = abs(math.cos(ang)), abs(math.sin(ang))
+        half_x = (pill_w / 2 + pad) * c + (pill_h / 2 + pad) * s
+        half_y = (pill_w / 2 + pad) * s + (pill_h / 2 + pad) * c
 
         # Lowest allowed window bottom: above the taskbar band if we can find
         # it (also covers an auto-hidden taskbar, which availableGeometry()
@@ -231,34 +371,89 @@ class PillWindow(QWidget):
                 taskbar_top = int(taskbar.top() / dpr)  # physical -> logical
                 bottom_limit = min(bottom_limit, taskbar_top - config.PILL_BOTTOM_GAP)
 
-        cx = min(max(self._center.x(), avail.left() + half_w), avail.right() - half_w)
-        cy = min(max(self._center.y(), avail.top() + half_h), bottom_limit - half_h)
-        self._center = QPoint(cx, cy)
+        cx = min(
+            max(self._center.x(), avail.left() + half_x),
+            avail.right() - half_x,
+        )
+        cy = min(max(self._center.y(), avail.top() + half_y), bottom_limit - half_y)
+        self._center = QPoint(int(cx), int(cy))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         """Start dragging the pill (left button only)."""
         if event.button() == Qt.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._press_pos = event.globalPosition().toPoint()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         """Move the pill while the left button is held."""
         if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
-            self._center = self.frameGeometry().center()
+            self._sync_center_from_window()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        """End the drag and remember the position for the next run."""
+        """End the drag; a click on the cancel / record button fires it."""
         if event.button() == Qt.LeftButton and self._drag_offset is not None:
             self._drag_offset = None
-            self._center = self.frameGeometry().center()
+            clicked = (
+                self._press_pos is not None
+                and (event.globalPosition().toPoint() - self._press_pos).manhattanLength() < 5
+            )
+            self._press_pos = None
+            if clicked and self._click_controls(event.position()):
+                super().mouseReleaseEvent(event)
+                return
+            self._sync_center_from_window()
             # A drop over the taskbar would hide the pill behind it forever.
             self._clamp_to_safe_area()
             self._apply_geometry()
             self._settings.setValue("pill/center", [self._center.x(), self._center.y()])
             self.position_changed.emit(self._center)
         super().mouseReleaseEvent(event)
+
+    def _sync_center_from_window(self) -> None:
+        """Recompute the pill center after a drag moved the window.
+
+        The pill's center is NOT the window's center (extra space on the
+        left for the cancel button, and the rotated bounding box), so the
+        center must be derived from the paint origin.
+        """
+        top_left = self.frameGeometry().topLeft()
+        origin = self._paint_origin()
+        self._center = QPoint(
+            top_left.x() + int(round(origin.x())),
+            top_left.y() + int(round(origin.y())),
+        )
+
+    def _click_controls(self, point) -> bool:
+        """Fire cancel_clicked / record_clicked if the click hit a control."""
+        p = self._to_content(point)
+        if self._cancel_t > 0.3 and self._cancel_geometry()[0].contains(p):
+            self.cancel_clicked.emit()
+            return True
+        if self._record_t > 0.5 and self._record_panel_rect().contains(p):
+            self.record_clicked.emit()
+            return True
+        return False
+
+    def is_over_ui(self) -> bool:
+        """Is the cursor over the cancel or record button right now?
+
+        Called from the global mouse hook (hotkey.py) on a hook thread so a
+        click on the pill's own controls is not mistaken for "other input".
+        It must never call into live Qt geometry, so it only does arithmetic
+        on cached values -- safe to call from any thread.
+        """
+        pos = _win32_cursor_pos()
+        if pos is None:
+            return False
+        point = self._to_content(
+            QPointF(pos[0] - self._last_win_pos[0], pos[1] - self._last_win_pos[1])
+        )
+        if self._cancel_t > 0.3 and self._cancel_geometry()[0].contains(point):
+            return True
+        return self._record_t > 0.5 and self._record_panel_rect().contains(point)
 
     # ------------------------------------------------------------------
     # State control (the hotkey/recorder code call these)
@@ -283,8 +478,19 @@ class PillWindow(QWidget):
         else:  # ERROR: freeze at the current size
             self._size_target = self._size_t
 
+        # Both pill controls are no-hands-only: reset here and re-shown by
+        # show_record_button() when no-hands mode starts.
+        self._cancel_target = 0.0
+        self._record_target = 0.0
+
         if state != PillState.RECORDING:
             self._level_target = 0.0
+
+    def show_record_button(self) -> None:
+        """No-hands mode: pop in the red record button and the cancel button."""
+        if self._state == PillState.RECORDING:
+            self._record_target = 1.0
+            self._cancel_target = 1.0
 
     def set_audio_level(self, level: float) -> None:
         """Feed the waveform with the live microphone level (0.0 - 1.0).
@@ -326,6 +532,23 @@ class PillWindow(QWidget):
             self._size_t = self._size_target
         self._apply_geometry()
 
+        # Ease the cancel / record buttons toward their targets. The cancel
+        # button moves at nearly the pill's pace, so it reads as "emerging
+        # from behind the pill" while the pill grows.
+        self._cancel_t += (self._cancel_target - self._cancel_t) * 0.15
+        if abs(self._cancel_target - self._cancel_t) < 0.002:
+            self._cancel_t = self._cancel_target
+        self._record_t += (self._record_target - self._record_t) * 0.18
+        if abs(self._record_target - self._record_t) < 0.002:
+            self._record_t = self._record_target
+
+        # Near the left/right screen edge the pill flips upright; the
+        # rotation eases so it reads as a smooth flip, not a snap.
+        self._update_flip_target()
+        self._rot_t += (self._rot_target - self._rot_t) * 0.18
+        if abs(self._rot_target - self._rot_t) < 0.002:
+            self._rot_t = self._rot_target
+
         # Smooth the level: quick attack (peaks show up right away), slower
         # release (troughs follow smoothly instead of snapping down).
         if self._level_target > self._level_smooth:
@@ -335,18 +558,58 @@ class PillWindow(QWidget):
         if self._level_smooth < 0.005:
             self._level_smooth = 0.0  # fully silent -> fully static
 
-        # Ease each bar toward its share of the current level. The center bars
-        # react slightly faster than the outer ones, giving a gentle ripple
-        # when speech starts and stops.
-        center = (NUM_BARS - 1) / 2
+        # Ease each bar toward its target. Even and odd bars swing in
+        # opposite phase and swap every half period, so the waveform dances
+        # left/right; every bar's height is still driven by the loudness.
         for i in range(NUM_BARS):
-            target = self._level_smooth * self._bar_weights[i]
-            bar_rate = 0.45 - 0.28 * abs(i - center) / max(center, 1)
-            self._bar_levels[i] += (target - self._bar_levels[i]) * bar_rate
+            target = self._level_smooth * self._bar_scale(i, t)
+            self._bar_levels[i] += (target - self._bar_levels[i]) * 0.4
             if self._bar_levels[i] < 0.004:
                 self._bar_levels[i] = 0.0
 
         self.update()  # schedule a repaint
+
+    def _update_flip_target(self) -> None:
+        """Decide flat vs upright, with hysteresis so it never flickers.
+
+        The pill flips upright when it (with its controls) comes within
+        EDGE_FLIP_GAP pixels of the left or right edge of its screen, and
+        flips back only once it is EDGE_FLIP_GAP + EDGE_FLIP_HYSTERESIS away
+        from both edges again.
+        """
+        screen = QApplication.screenAt(self._center) or QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        pill_w, _ = self._pill_size()
+        pad = config.PILL_SHADOW_MARGIN
+        # Trigger distances use the horizontal layout (what the pill would
+        # need if it stayed flat), including the cancel button's slot.
+        limit_left = pill_w / 2 + self._cancel_extent() + pad + config.EDGE_FLIP_GAP
+        limit_right = pill_w / 2 + pad + config.EDGE_FLIP_GAP
+        dist_left = self._center.x() - avail.left()
+        dist_right = avail.right() - self._center.x()
+        if self._vertical:
+            if (
+                dist_left > limit_left + config.EDGE_FLIP_HYSTERESIS
+                and dist_right > limit_right + config.EDGE_FLIP_HYSTERESIS
+            ):
+                self._vertical = False
+        elif dist_left < limit_left or dist_right < limit_right:
+            self._vertical = True
+        self._rot_target = 1.0 if self._vertical else 0.0
+
+    def _bar_scale(self, i: int, t: float) -> float:
+        """0..1 multiplier for bar i: tall/short alternating over time.
+
+        Even bars are high while odd bars are low and vice versa -- exactly
+        opposite phase -- and the groups swap BAR_SWAP_HZ times per second.
+        The result multiplies the live loudness, so quiet speech stays
+        subtle and loud speech fills the pill.
+        """
+        phase = t * 2.0 * math.pi * BAR_SWAP_HZ + (i % 2) * math.pi
+        swing = 0.5 + 0.5 * math.sin(phase)
+        return 0.30 + 0.70 * swing * BAR_VARIETY[i]
 
     def _fake_audio_tick(self, t: float) -> None:
         """--demo only: invent speech-like levels (talk bursts + pauses).
@@ -373,14 +636,19 @@ class PillWindow(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # The drawn pill is centered in the widget; the widget is larger to
-        # leave room for the soft shadow around it.
-        pill_w, pill_h = self._pill_size()
-        cx = self.width() / 2
-        cy = self.height() / 2
-        pill_rect = QRectF(cx - pill_w / 2, cy - pill_h / 2, pill_w, pill_h)
-        radius = pill_h / 2
+        # Everything is drawn in content coordinates (origin = pill center)
+        # through a rotation about that center, so the pill can stand upright
+        # near a screen edge. The window leaves room for the shadow and for
+        # the cancel button left of the pill (see _layout_extents).
+        origin = self._paint_origin()
+        painter.translate(origin.x(), origin.y())
+        painter.rotate(self._rotation_deg())
+        pill_rect = self._pill_rect()
+        radius = pill_rect.height() / 2
 
+        # The cancel button goes in first so the pill's body can cover it
+        # while it is still tucked behind the pill.
+        self._paint_cancel_button(painter)
         self._paint_shadow(painter, pill_rect, radius)
 
         # Solid dark fill (red-tinted during the error flash).
@@ -413,6 +681,7 @@ class PillWindow(QWidget):
         painter.setOpacity(alpha)
         if state == PillState.RECORDING:
             self._paint_waveform(painter, pill_rect)
+            self._paint_record_button(painter, pill_rect)
         elif state == PillState.PROCESSING:
             self._paint_dots(painter, pill_rect)
         elif state == PillState.IDLE:
@@ -454,15 +723,91 @@ class PillWindow(QWidget):
         painter.setBrush(COL_IDLE)
         painter.drawEllipse(pill_rect.center(), radius, radius)
 
+    def _paint_cancel_button(self, painter: QPainter) -> None:
+        """The circular cancel button (drawn behind the pill body)."""
+        rect, alpha = self._cancel_geometry()
+        if alpha <= 0.01:
+            return
+        painter.setOpacity(alpha)
+        self._paint_shadow(painter, rect, rect.height() / 2)
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(COL_BACKGROUND)
+        painter.drawEllipse(rect)
+        # Same double outline as the pill, for a consistent look.
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(COL_BORDER_INNER, 1))
+        painter.drawEllipse(rect.adjusted(1.5, 1.5, -1.5, -1.5))
+        painter.setPen(QPen(COL_BORDER_OUTER, 1))
+        painter.drawEllipse(rect.adjusted(0.5, 0.5, -0.5, -0.5))
+
+        # The X: round-capped but deliberately small and light.
+        c = rect.center()
+        span = rect.height() * config.CANCEL_CROSS_SPAN
+        pen = QPen(COL_CANCEL_X, rect.height() * config.CANCEL_CROSS_WIDTH)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(
+            QPointF(c.x() - span, c.y() - span), QPointF(c.x() + span, c.y() + span)
+        )
+        painter.drawLine(
+            QPointF(c.x() - span, c.y() + span), QPointF(c.x() + span, c.y() - span)
+        )
+        painter.setOpacity(1.0)
+
+    def _paint_record_button(self, painter: QPainter, pill_rect: QRectF) -> None:
+        """The red record button inside the pill's right side (no-hands mode).
+
+        The dark red panel grows open from the pill's right edge, then the
+        bright red icon pops into its middle.
+        """
+        p = self._record_t
+        if p <= 0.01:
+            return
+        panel = self._record_panel_rect()
+        visible = QRectF(
+            panel.right() - panel.width() * p,
+            panel.top(),
+            panel.width() * p,
+            panel.height(),
+        )
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(COL_REC_PANEL)
+        painter.drawRoundedRect(visible, panel.height() * 0.45, panel.height() * 0.45)
+
+        # The icon pops in (scale + fade) once the panel has mostly opened.
+        icon_t = max(0.0, min(1.0, (p - 0.55) / 0.45))
+        if icon_t > 0.0:
+            size = panel.height() * 0.52 * (0.5 + 0.5 * icon_t)
+            color = QColor(COL_REC_ICON)
+            color.setAlpha(int(255 * icon_t))
+            painter.setBrush(color)
+            painter.drawRoundedRect(
+                QRectF(
+                    panel.center().x() - size / 2,
+                    panel.center().y() - size / 2,
+                    size,
+                    size,
+                ),
+                size * 0.3,
+                size * 0.3,
+            )
+
     def _paint_waveform(self, painter: QPainter, pill_rect: QRectF) -> None:
         """Waveform driven by the real microphone level.
 
-        Heights follow the smoothed RMS: silence -> a flat, still row of bars;
-        speech -> a peak/trough shape that mirrors what the user is saying.
+        Heights follow the smoothed RMS (silence -> a flat, still row) while
+        the bars alternate tall and short, swapping sides over time.
         """
         bar_w, gap = 3.0, 3.0
         total_w = NUM_BARS * bar_w + (NUM_BARS - 1) * gap
-        x0 = pill_rect.center().x() - total_w / 2
+        # When the red record button is in the pill, the waveform sits in
+        # whatever space is left of it.
+        inset = pill_rect.height() * config.RECORD_BUTTON_INSET
+        panel_w = pill_rect.width() * config.RECORD_BUTTON_WIDTH
+        reserved = self._record_t * (panel_w + 2.0 * inset)
+        area = pill_rect.adjusted(0, 0, -reserved, 0)
+        x0 = area.center().x() - total_w / 2
         y_mid = pill_rect.center().y()
         max_h = pill_rect.height() * 0.52
         min_h = 2.5  # static floor while silent
@@ -540,8 +885,25 @@ class PillWindow(QWidget):
 
     def _demo_next(self) -> None:
         sequence = [PillState.IDLE, PillState.RECORDING, PillState.PROCESSING, PillState.ERROR]
-        self.set_state(sequence[self._demo_step % len(sequence)])
+        state = sequence[self._demo_step % len(sequence)]
+        self.set_state(state)
+        if state == PillState.RECORDING:
+            self.show_record_button()  # demo the no-hands layout too
         self._demo_step += 1
+
+
+def _win32_cursor_pos() -> tuple[int, int] | None:
+    """The cursor position in global screen coordinates (None off Windows)."""
+    if sys.platform != "win32":
+        return None
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+    point = POINT()
+    if not ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+        return None
+    return point.x, point.y
 
 
 def _win32_taskbar_rect() -> QRect | None:

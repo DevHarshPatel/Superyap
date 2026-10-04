@@ -3,6 +3,8 @@
 Hold Ctrl+Win (or press it twice for no-hands mode) and speak. When you stop, the take is transcribed
 with Groq Whisper and the text is pasted into whatever window has focus
 (PR flow: pill -> waveform -> processing -> pasted text, clipboard kept).
+The take is submitted on release (or Enter / the pill's red record button
+in no-hands mode) and can be cancelled with Esc or the pill's cancel button.
 
 `python main.py --demo` cycles all four pill states with fake audio levels.
 See README.md for the plan.
@@ -84,9 +86,17 @@ def main() -> int:
         hotkeys = HotkeyManager()
         hotkeys.recording_begun.connect(monitor.start_recording)
         hotkeys.recording_ui_show.connect(lambda: pill.set_state(PillState.RECORDING))
+        hotkeys.record_ui_show.connect(pill.show_record_button)  # no-hands mode
         hotkeys.recording_discarded.connect(monitor.discard_recording)
         hotkeys.recording_cancelled.connect(lambda: pill.set_state(PillState.IDLE))
         hotkeys.recording_stopped.connect(lambda: _on_stopped(monitor, pill, hotkeys, bridge))
+        # The pill's own buttons: the red record button submits the take,
+        # the circular cancel button discards it (no API call).
+        pill.record_clicked.connect(hotkeys.submit_from_ui)
+        pill.cancel_clicked.connect(hotkeys.cancel_from_ui)
+        # A click on those buttons must not count as "other input" in the
+        # hotkey state machine (which would discard the take).
+        hotkeys.ui_hit_test = pill.is_over_ui
         # 5-minute maximum length: the recorder auto-stops and we finish the
         # hotkey session as if the user had released the key.
         monitor.max_length_reached.connect(hotkeys.force_finish)

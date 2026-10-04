@@ -20,9 +20,12 @@ shortcuts like Ctrl+C keep working exactly as before.
 - Push-to-talk (hold Ctrl+Win) and no-hands dictation (press Ctrl+Win twice)
 - Shortcut-safe hotkey: Ctrl+C, Ctrl+V, Ctrl+Z, Ctrl+click and Ctrl+scroll
   work normally and simply cancel the take
-- Esc cancels a recording with nothing pasted
-- Floating pill UI: idle, recording (live microphone waveform), processing,
-  brief red error flash
+- Esc cancels a recording with nothing pasted; in no-hands mode the pill's
+  circular cancel button does the same, and Enter (or the pill's red record
+  button) submits it
+- Floating pill UI: idle, recording (live microphone waveform + red record
+  button in no-hands mode), processing, brief red error flash
+- Flips upright (90°) when dragged close to the left or right screen edge
 - Never steals focus — no taskbar button, no Alt+Tab entry
 - Draggable pill whose position is remembered between runs
 - Groq Whisper transcription + LLM cleanup, with automatic fallback to the
@@ -39,7 +42,9 @@ shortcuts like Ctrl+C keep working exactly as before.
    and recording starts immediately.
 2. Speak; the pill shows your live microphone level as a waveform.
 3. Stop: release the keys after holding them, or press **Ctrl+Win** once if
-   you started with the double press. Press **Esc** to cancel instead.
+   you started with the double press. In no-hands mode **Enter** or a click
+   on the pill's red record button also submits, and a click on the pill's
+   circular cancel button cancels. Press **Esc** to cancel instead.
 4. The take (16 kHz mono WAV, kept in memory only) is sent to **Groq Whisper**
    (`whisper-large-v3-turbo`) for transcription.
 5. The transcript goes to a **Groq LLM** (`openai/gpt-oss-20b`) for light
@@ -90,13 +95,16 @@ python main.py --demo   # cycle the pill states with fake audio
 - **Hold Ctrl+Win** for at least ~0.3 s and speak, then release → the take
   is transcribed, cleaned up and pasted (push-to-talk).
 - **Press Ctrl+Win twice** within 0.4 s → no-hands mode: recording stays on
-  (the pill shows it at once); the next press of Ctrl+Win stops and pastes.
+  (the pill shows it at once, with a red record button and a circular cancel
+  button); the next press of Ctrl+Win, **Enter**, or a click on the red
+  record button stops and pastes, and a click on the cancel button discards.
 - A single short tap of Ctrl+Win does nothing — accidental taps never start
   dictation.
 - **Esc** while recording → cancel. Nothing is transcribed or pasted.
 - Any other key, mouse click, or scroll while Ctrl+Win is held → the take is
   discarded instantly, so normal shortcuts keep working.
-- Drag the pill anywhere with the mouse; the position is remembered.
+- Drag the pill anywhere with the mouse; the position is remembered. Close
+  to the left or right screen edge the pill flips 90° and stands upright.
 
 **Pill states**
 
@@ -104,6 +112,7 @@ python main.py --demo   # cycle the pill states with fake audio
 |---|---|
 | Small, dim dot | Idle |
 | Waving bars | Recording (bars follow your voice level) |
+| Waving bars + red record button + cancel circle | No-hands recording (Enter / red button submits, ✕ discards) |
 | Pulsing dots | Processing (transcription + cleanup) |
 | Red flash | Error — details in `superyap.log` |
 

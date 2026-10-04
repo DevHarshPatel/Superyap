@@ -22,7 +22,10 @@ The state machine in this file decides when recording starts and stops:
       recording (UI shows at once) and the next clean chord press stops
       and processes. If no second tap comes, the recording is discarded
       and the UI never changes.
-- Esc while recording cancels it with no processing at all.
+- Esc while recording cancels it with no processing at all, and so does a
+  click on the pill's circular cancel button (cancel_from_ui).
+- Enter while recording -- or a click on the pill's red record button
+  (submit_from_ui) -- finishes the take and processes it.
 - `is_pasting` is the self-trigger guard: while True (set by paster.py while
   we simulate Ctrl+V), no event we generate ourselves is reacted to.
 
@@ -96,6 +99,8 @@ class HotkeyManager(QObject):
     # so the pill "must not change at all" when a shortcut or a lone tap
     # happens before the 150 ms UI delay.
     recording_cancelled = Signal()
+    # No-hands mode started: the pill should show its red record button.
+    record_ui_show = Signal()
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -105,6 +110,11 @@ class HotkeyManager(QObject):
         # Self-trigger protection (PRD 4): paster.py sets this while sending
         # the simulated Ctrl+V so we never react to our own keystrokes.
         self.is_pasting = False
+
+        # Optional hit-test (set by main.py): True while the cursor is over
+        # the pill's own controls. Clicks there are handled by the pill
+        # itself and must not count as "other input".
+        self.ui_hit_test: Optional[Callable[[], bool]] = None
 
         self._down_keys: set = set()  # hotkey keys physically down right now
         self._chord_active = False    # the whole chord is down (a "press")
@@ -162,6 +172,14 @@ class HotkeyManager(QObject):
                 self._on_chord_down()
             return  # a chord key on its own is never "other input"
 
+        if key == pkeyboard.Key.enter:
+            # Enter confirms the take: stop and process it now.
+            if self._recording:
+                self._finish()
+            elif self._chord_active:
+                self._mark_other_input()
+            return
+
         if key == pkeyboard.Key.esc:
             if self._recording:
                 self._cancel()
@@ -193,6 +211,8 @@ class HotkeyManager(QObject):
         if event_type == "move":
             return
         if self._chord_active:
+            if self.ui_hit_test is not None and self.ui_hit_test():
+                return  # a click on the pill's buttons: the pill handles it
             self._mark_other_input()
 
     # ------------------------------------------------------------------
@@ -212,6 +232,7 @@ class HotkeyManager(QObject):
             self._stop_press = False
             self._toggle_mode = True
             self._show_ui()
+            self.record_ui_show.emit()  # the red record button pops in
         elif self._recording:
             # No-hands recording is running; this press might be the
             # "stop" press. We wait for a clean release before stopping,
@@ -274,6 +295,16 @@ class HotkeyManager(QObject):
         and any auto-repeats that follow are ignored cleanly.
         """
         self._finish()
+
+    def cancel_from_ui(self) -> None:
+        """The pill's cancel button was clicked: discard, no API call."""
+        if self._recording:
+            self._cancel()
+
+    def submit_from_ui(self) -> None:
+        """The pill's red record button was clicked: stop and process."""
+        if self._recording:
+            self._finish()
 
     def _mark_other_input(self) -> None:
         """Record that normal input happened while the chord is down."""

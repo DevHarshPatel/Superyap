@@ -97,6 +97,35 @@ PILL_HEIGHT = 26
 PILL_SMALL_WIDTH = 64
 PILL_SMALL_HEIGHT = 12
 
+# The cancel button next to the pill: a circle the same size as the pill is
+# tall, sitting left of the pill and emerging from behind it. Its diameter is
+# the pill height x CANCEL_BUTTON_SCALE and its gap to the pill is the pill
+# height x CANCEL_BUTTON_GAP.
+CANCEL_BUTTON_SCALE = 1.0
+CANCEL_BUTTON_GAP = 0.35
+
+# The cross drawn inside the cancel button: half-length of its arms and its
+# stroke width, as fractions of the circle's diameter. Kept small so the
+# circle reads as a quiet "close", not a bold X.
+CANCEL_CROSS_SPAN = 0.15
+CANCEL_CROSS_WIDTH = 0.06
+
+# Edge flip: when the pill (with its controls) comes within this many pixels
+# of the left or right screen edge it flips 90 degrees to stand upright. It
+# flips back only once it is GAP + HYSTERESIS away from both edges again (the
+# hysteresis keeps it from flickering at the threshold).
+EDGE_FLIP_GAP = 20
+EDGE_FLIP_HYSTERESIS = 40
+
+# How much of the pill body must stay on screen when a drag is clamped.
+PILL_EDGE_PAD = 8
+
+# The red record button inside the pill's right side (no-hands mode): a dark
+# red rounded panel with the bright red record icon in the middle.
+RECORD_BUTTON_WIDTH = 0.34    # x pill width
+RECORD_BUTTON_HEIGHT = 0.68   # x pill height
+RECORD_BUTTON_INSET = 0.14    # gap from the pill's right edge (x pill height)
+
 # Extra room around the pill for its shadow (pixels of transparent padding).
 PILL_SHADOW_MARGIN = 14
 
