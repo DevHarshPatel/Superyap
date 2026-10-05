@@ -65,7 +65,7 @@ shortcuts like Ctrl+C keep working exactly as before.
 ## Installation
 
 ```powershell
-git clone https://github.com/<your-username>/Superyap.git
+git clone https://github.com/DevHarshPatel/Superyap.git
 cd Superyap
 python -m venv .venv
 .venv\Scripts\Activate.ps1
